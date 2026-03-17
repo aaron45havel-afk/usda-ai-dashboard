@@ -34,10 +34,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Database init error: {e}", flush=True)
 
-    # Load data in background so healthcheck can respond immediately
-    async def load_data():
+    # Load seed data immediately (no API calls, instant)
+    try:
+        from data_fetchers import (
+            seed_crop_data, seed_market_data, seed_snap_data, seed_weather_data,
+            save_crop_data, save_commodity_prices, save_snap_data, save_weather_data,
+        )
+        save_crop_data(seed_crop_data())
+        save_commodity_prices(seed_market_data())
+        save_snap_data(seed_snap_data())
+        save_weather_data(seed_weather_data())
+        run_anomaly_detection()
+        print("Seed data loaded + anomaly detection complete.", flush=True)
+    except Exception as e:
+        print(f"Seed data error: {e}", flush=True)
+
+    # Then try live API data in background (won't block startup)
+    async def refresh_from_apis():
         try:
-            print("Fetching initial data from all tiers...", flush=True)
+            print("Fetching live data from APIs...", flush=True)
             results = await asyncio.gather(
                 fetch_nass_crop_data(),
                 fetch_ams_market_prices(),
@@ -48,13 +63,12 @@ async def lifespan(app: FastAPI):
             for i, r in enumerate(results):
                 if isinstance(r, Exception):
                     print(f"  Tier fetch {i} failed: {r}", flush=True)
-            print("Running anomaly detection...", flush=True)
             run_anomaly_detection()
-            print("Startup complete — all data loaded.", flush=True)
+            print("Live data refresh complete.", flush=True)
         except Exception as e:
-            print(f"Warning: Data loading failed: {e}", flush=True)
+            print(f"Warning: Live data fetch failed (seed data still available): {e}", flush=True)
 
-    asyncio.create_task(load_data())
+    asyncio.create_task(refresh_from_apis())
     yield
 
 
