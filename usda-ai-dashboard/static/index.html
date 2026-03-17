@@ -625,11 +625,25 @@ function renderSnap(data) {
 // RENDER: Weather
 // ---------------------------------------------------------------------------
 function renderWeather(data) {
-  const byState = {};
+  // Aggregate by state+date (average across stations if multiple)
+  const agg = {};
   (data.data || []).forEach(r => {
-    if (!byState[r.state]) byState[r.state] = [];
-    byState[r.state].push(r);
+    const key = r.state + '|' + r.date;
+    if (!agg[key]) agg[key] = { state: r.state, date: r.date, temps: [], precips: [] };
+    if (r.temp_avg != null) agg[key].temps.push(r.temp_avg);
+    if (r.precip != null) agg[key].precips.push(r.precip);
   });
+  const byState = {};
+  Object.values(agg).forEach(a => {
+    if (!byState[a.state]) byState[a.state] = [];
+    byState[a.state].push({
+      state: a.state, date: a.date,
+      temp_avg: a.temps.length ? +(a.temps.reduce((s,v)=>s+v,0)/a.temps.length).toFixed(1) : null,
+      precip: a.precips.length ? +(a.precips.reduce((s,v)=>s+v,0)/a.precips.length).toFixed(2) : null,
+    });
+  });
+  // Sort each state's data by date
+  Object.values(byState).forEach(rows => rows.sort((a,b) => a.date.localeCompare(b.date)));
 
   destroyChart('tempChart');
   charts.tempChart = new Chart(document.getElementById('tempChart'), {
@@ -637,8 +651,8 @@ function renderWeather(data) {
     data: {
       datasets: Object.entries(byState).map(([state, rows], i) => ({
         label: state,
-        data: rows.filter(r=>r.temp_avg).slice(0,30).reverse().map(r => ({ x: r.date, y: r.temp_avg })),
-        borderColor: COLORS[i % COLORS.length], backgroundColor: 'transparent', tension: 0.3, pointRadius: 1,
+        data: rows.filter(r=>r.temp_avg != null).map(r => ({ x: r.date, y: r.temp_avg })),
+        borderColor: COLORS[i % COLORS.length], backgroundColor: 'transparent', tension: 0.3, pointRadius: 2,
       }))
     },
     options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'category' }, y: { title: { display: true, text: 'Temp (F)' } } } }
