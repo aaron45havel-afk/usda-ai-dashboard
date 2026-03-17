@@ -1,6 +1,6 @@
 # USDA Agricultural AI Data Dashboard
 
-Real-time agricultural market data aggregation with AI-powered anomaly detection for fraud and improper payment analysis. Built to support USDA's AI Strategy (FY26–27) focus areas.
+Agricultural market data aggregation with multi-signal anomaly detection across FNS/SNAP benefits and USDA commodity markets. Proof of concept.
 
 ## Data Sources (3 Tiers)
 
@@ -56,4 +56,4 @@ python main.py
 
 ## Anomaly Detection
 
-Uses z-score statistical analysis across SNAP benefit data and commodity prices to flag potential improper payments and market anomalies. Designed with human-in-the-loop review per USDA AI Strategy and OMB M-25-21 requirements.
+Uses a 5-signal engine (benefit deviation, participation-economy divergence, benefit-inflation mismatch, QC error rate risk, geographic outlier) to flag unusual SNAP patterns at the state-month level. Commodity prices are scored separately via z-score analysis. All flags are surfaced for human review — no automated action is taken.
