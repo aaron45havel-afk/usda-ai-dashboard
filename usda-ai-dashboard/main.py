@@ -205,12 +205,24 @@ async def get_commodity_detail(commodity: str):
 
 @app.get("/api/snap")
 async def get_snap_data():
-    """SNAP participation and benefit data."""
+    """SNAP participation and benefit data — county-level where available."""
     conn = get_db()
     try:
+        # County-level detail
+        by_location = conn.execute("""
+            SELECT state, county, county_fips, year, month, participants, benefits_millions, avg_benefit_per_person
+            FROM snap_data ORDER BY state, county, year, month
+        """).fetchall()
+
+        # State-level aggregation (sum counties back to state)
         by_state = conn.execute("""
-            SELECT state, year, month, participants, benefits_millions, avg_benefit_per_person
-            FROM snap_data ORDER BY state, year, month
+            SELECT state, year, month,
+                   SUM(participants) as participants,
+                   SUM(benefits_millions) as benefits_millions,
+                   ROUND(SUM(benefits_millions) * 1000000.0 / NULLIF(SUM(participants), 0), 2) as avg_benefit_per_person
+            FROM snap_data
+            GROUP BY state, year, month
+            ORDER BY state, year, month
         """).fetchall()
 
         national = conn.execute("""
@@ -223,9 +235,14 @@ async def get_snap_data():
             ORDER BY year, month
         """).fetchall()
 
+        # Count of distinct counties
+        county_count = conn.execute("SELECT COUNT(DISTINCT county) FROM snap_data WHERE county != ''").fetchone()[0]
+
         return {
+            "by_location": [dict(r) for r in by_location],
             "by_state": [dict(r) for r in by_state],
             "national_trend": [dict(r) for r in national],
+            "county_count": county_count,
         }
     finally:
         conn.close()
@@ -233,12 +250,12 @@ async def get_snap_data():
 
 @app.get("/api/weather")
 async def get_weather_data():
-    """Weather data for agricultural regions."""
+    """Weather data for agricultural regions — county-level."""
     conn = get_db()
     try:
         rows = conn.execute("""
-            SELECT state, date, temp_avg, precip, drought_index
-            FROM weather_data ORDER BY state, date DESC
+            SELECT state, county, county_fips, date, temp_avg, precip, drought_index
+            FROM weather_data ORDER BY state, county, date DESC
         """).fetchall()
         return {"data": [dict(r) for r in rows]}
     finally:
@@ -304,25 +321,35 @@ async def get_anomaly_detail(anomaly_id: int):
                 record = dict(record)
                 result["flagged_record"] = record
 
-                # Get ALL records for this state to show how z-score was calculated
-                all_state = conn.execute(
-                    "SELECT id, year, month, participants, benefits_millions, avg_benefit_per_person "
-                    "FROM snap_data WHERE state = ? ORDER BY year, month",
-                    (record["state"],)
-                ).fetchall()
-                all_state = [dict(r) for r in all_state]
-                result["history"] = all_state
+                location_label = f"{record['county']}, {record['state']}" if record.get("county") else record["state"]
+
+                # Get ALL records for this location (same state+county) to show history
+                if record.get("county"):
+                    all_loc = conn.execute(
+                        "SELECT id, county, year, month, participants, benefits_millions, avg_benefit_per_person "
+                        "FROM snap_data WHERE state = ? AND county = ? ORDER BY year, month",
+                        (record["state"], record["county"]),
+                    ).fetchall()
+                else:
+                    all_loc = conn.execute(
+                        "SELECT id, county, year, month, participants, benefits_millions, avg_benefit_per_person "
+                        "FROM snap_data WHERE state = ? AND (county = '' OR county IS NULL) ORDER BY year, month",
+                        (record["state"],),
+                    ).fetchall()
+                all_loc = [dict(r) for r in all_loc]
+                result["history"] = all_loc
 
                 # Recalculate z-score step by step for the explainer
-                values = [r["avg_benefit_per_person"] for r in all_state if r["avg_benefit_per_person"]]
+                values = [r["avg_benefit_per_person"] for r in all_loc if r["avg_benefit_per_person"]]
                 n = len(values)
-                mean_val = sum(values) / n
-                std_val = (sum((x - mean_val) ** 2 for x in values) / (n - 1)) ** 0.5
+                mean_val = sum(values) / n if n else 0
+                std_val = (sum((x - mean_val) ** 2 for x in values) / max(n - 1, 1)) ** 0.5 if n > 1 else 0
                 flagged_val = record["avg_benefit_per_person"]
                 z = abs(flagged_val - mean_val) / std_val if std_val > 0 else 0
 
                 result["calculation"] = {
                     "metric": "avg_benefit_per_person",
+                    "location": location_label,
                     "flagged_value": round(flagged_val, 2),
                     "mean": round(mean_val, 2),
                     "std_dev": round(std_val, 2),
@@ -331,7 +358,7 @@ async def get_anomaly_detail(anomaly_id: int):
                     "threshold": 1.8,
                     "formula": f"|${flagged_val:.2f} - ${mean_val:.2f}| / ${std_val:.2f} = {z:.3f}",
                     "explanation": (
-                        f"This state's avg benefit of ${flagged_val:.2f} is {z:.1f} standard deviations "
+                        f"{location_label} avg benefit of ${flagged_val:.2f} is {z:.1f} standard deviations "
                         f"from the mean of ${mean_val:.2f} across {n} monthly observations. "
                         f"Values above z=1.8 are flagged. "
                         f"{'This is a strong signal — worth investigating.' if z > 3.0 else 'Moderate signal — review recommended.' if z > 2.0 else 'Weak signal — may be normal variation.'}"
@@ -372,9 +399,9 @@ async def get_anomaly_detail(anomaly_id: int):
                         "relevance": "Severe weather/drought can cause crop failures, increasing food insecurity and SNAP enrollment",
                     })
 
-                # Other anomalies in the same time period
+                # Other anomalies in the same time period (including other counties)
                 nearby_anomalies = conn.execute(
-                    "SELECT a.*, s.state, s.year, s.month, s.avg_benefit_per_person "
+                    "SELECT a.*, s.state, s.county, s.year, s.month, s.avg_benefit_per_person "
                     "FROM anomaly_scores a "
                     "JOIN snap_data s ON a.record_id = s.id AND a.data_source = 'snap_data' "
                     "WHERE s.year = ? AND s.month = ? AND a.id != ? "
