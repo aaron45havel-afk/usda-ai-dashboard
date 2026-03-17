@@ -362,16 +362,16 @@ def seed_market_data():
 
 def seed_snap_data():
     states = [
-        {"state": "California", "base_part": 4800000, "base_ben": 890},
-        {"state": "Texas", "base_part": 3700000, "base_ben": 760},
-        {"state": "Florida", "base_part": 3200000, "base_ben": 680},
-        {"state": "New York", "base_part": 2900000, "base_ben": 820},
-        {"state": "Illinois", "base_part": 1800000, "base_ben": 720},
-        {"state": "Pennsylvania", "base_part": 1700000, "base_ben": 700},
-        {"state": "Ohio", "base_part": 1500000, "base_ben": 670},
-        {"state": "Georgia", "base_part": 1600000, "base_ben": 650},
-        {"state": "Michigan", "base_part": 1300000, "base_ben": 690},
-        {"state": "North Carolina", "base_part": 1200000, "base_ben": 640},
+        {"state": "California", "base_part": 4800000, "base_ben": 214},
+        {"state": "Texas", "base_part": 3700000, "base_ben": 189},
+        {"state": "Florida", "base_part": 3200000, "base_ben": 182},
+        {"state": "New York", "base_part": 2900000, "base_ben": 228},
+        {"state": "Illinois", "base_part": 1800000, "base_ben": 197},
+        {"state": "Pennsylvania", "base_part": 1700000, "base_ben": 191},
+        {"state": "Ohio", "base_part": 1500000, "base_ben": 185},
+        {"state": "Georgia", "base_part": 1600000, "base_ben": 178},
+        {"state": "Michigan", "base_part": 1300000, "base_ben": 193},
+        {"state": "North Carolina", "base_part": 1200000, "base_ben": 176},
     ]
     records = []
     for s in states:
