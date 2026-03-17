@@ -80,6 +80,7 @@ def init_db():
             anomaly_score REAL,
             anomaly_type TEXT,
             description TEXT,
+            signals TEXT,
             detected_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -94,6 +95,12 @@ def init_db():
             timestamp TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Migration: add signals column if missing
+    try:
+        cursor.execute("SELECT signals FROM anomaly_scores LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE anomaly_scores ADD COLUMN signals TEXT")
 
     conn.commit()
     conn.close()
