@@ -270,7 +270,6 @@ async def fetch_weather_data():
         save_weather_data(records)
         return records
 
-    records = []
     farm_states = [
         {"fips": "FIPS:17", "name": "Illinois"},
         {"fips": "FIPS:19", "name": "Iowa"},
@@ -282,6 +281,10 @@ async def fetch_weather_data():
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
+    # Collect raw observations keyed by (state, date) so we can merge
+    # TMAX/TMIN/TAVG/PRCP into one row per state-date.
+    merged = {}  # key: (state_name, date_str) -> dict
+
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         for state in farm_states:
             try:
@@ -290,9 +293,9 @@ async def fetch_weather_data():
                     "locationid": state["fips"],
                     "startdate": start_date,
                     "enddate": end_date,
-                    "datatypeid": "TAVG,PRCP",
+                    "datatypeid": "TAVG,TMAX,TMIN,PRCP",
                     "units": "standard",
-                    "limit": 25,
+                    "limit": 100,
                 }
                 headers = {"token": NOAA_API_TOKEN}
                 resp = await client.get(f"{NOAA_BASE_URL}/data", params=params, headers=headers)
@@ -300,19 +303,41 @@ async def fetch_weather_data():
                 if resp.status_code == 200:
                     data = resp.json().get("results", [])
                     for item in data:
-                        records.append({
-                            "state": state["name"],
-                            "station": item.get("station", ""),
-                            "date": item.get("date", "")[:10],
-                            "temp_avg": item.get("value") if item.get("datatype") == "TAVG" else None,
-                            "precip": item.get("value") if item.get("datatype") == "PRCP" else None,
-                            "drought_index": None,
-                        })
+                        date_str = item.get("date", "")[:10]
+                        key = (state["name"], date_str)
+                        if key not in merged:
+                            merged[key] = {"state": state["name"], "date": date_str, "tavg": None, "tmax": None, "tmin": None, "precip": None}
+                        dt = item.get("datatype")
+                        val = item.get("value")
+                        if dt == "TAVG":
+                            merged[key]["tavg"] = val
+                        elif dt == "TMAX":
+                            merged[key]["tmax"] = val
+                        elif dt == "TMIN":
+                            merged[key]["tmin"] = val
+                        elif dt == "PRCP":
+                            merged[key]["precip"] = val
                     log_api_call(f"NOAA/{state['name']}", resp.status_code, len(data))
                 else:
                     log_api_call(f"NOAA/{state['name']}", resp.status_code, 0, resp.text[:200])
             except Exception as e:
                 log_api_call(f"NOAA/{state['name']}", 0, 0, str(e)[:200])
+
+    # Build final records — compute temp_avg from TMAX/TMIN if TAVG missing
+    records = []
+    for key in sorted(merged.keys()):
+        m = merged[key]
+        temp_avg = m["tavg"]
+        if temp_avg is None and m["tmax"] is not None and m["tmin"] is not None:
+            temp_avg = round((m["tmax"] + m["tmin"]) / 2, 1)
+        records.append({
+            "state": m["state"],
+            "station": "",
+            "date": m["date"],
+            "temp_avg": temp_avg,
+            "precip": m["precip"],
+            "drought_index": None,
+        })
 
     if not records:
         records = seed_weather_data()
