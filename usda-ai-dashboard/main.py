@@ -34,20 +34,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Database init error: {e}", flush=True)
 
-    # Load seed data immediately (no API calls, instant)
+    # Load real data from CSVs (instant) + seed data for market/weather/crop
     try:
         from data_fetchers import (
-            seed_crop_data, seed_market_data, seed_snap_data, seed_weather_data,
+            load_real_snap_data, seed_crop_data, seed_market_data, seed_weather_data,
             save_crop_data, save_commodity_prices, save_snap_data, save_weather_data,
         )
-        save_crop_data(seed_crop_data())
+        # SNAP: real FNS-sourced data from CSV
+        save_snap_data(load_real_snap_data())
+        # Market/Crop/Weather: seed data (live APIs attempted in background)
         save_commodity_prices(seed_market_data())
-        save_snap_data(seed_snap_data())
+        save_crop_data(seed_crop_data())
         save_weather_data(seed_weather_data())
+        # Multi-signal anomaly detection across all data
         run_anomaly_detection()
-        print("Seed data loaded + anomaly detection complete.", flush=True)
+        print("Real SNAP data + seed data loaded, multi-signal anomaly detection complete.", flush=True)
     except Exception as e:
-        print(f"Seed data error: {e}", flush=True)
+        print(f"Data load error: {e}", flush=True)
 
     # Then try live API data in background (won't block startup)
     async def refresh_from_apis():
@@ -248,7 +251,7 @@ async def get_anomalies():
     conn = get_db()
     try:
         rows = conn.execute("""
-            SELECT id, data_source, record_id, anomaly_score, anomaly_type, description, detected_at
+            SELECT id, data_source, record_id, anomaly_score, anomaly_type, description, signals, detected_at
             FROM anomaly_scores
             ORDER BY anomaly_score DESC
         """).fetchall()
@@ -282,7 +285,15 @@ async def get_anomaly_detail(anomaly_id: int):
             return JSONResponse(status_code=404, content={"error": "Anomaly not found"})
         anomaly = dict(anomaly)
 
-        result = {"anomaly": anomaly, "calculation": {}, "history": [], "corroboration": []}
+        # Parse stored signals JSON
+        signals = {}
+        if anomaly.get("signals"):
+            try:
+                signals = json.loads(anomaly["signals"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        result = {"anomaly": anomaly, "calculation": {}, "history": [], "corroboration": [], "signals": signals}
 
         if anomaly["data_source"] == "snap_data":
             # Get the flagged record
