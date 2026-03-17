@@ -1,7 +1,7 @@
 """
 USDA Agricultural AI Data Dashboard
 Aggregates data from USDA NASS, AMS, FNS/SNAP, and NOAA APIs
-with built-in anomaly detection for fraud/improper payment analysis.
+with multi-signal anomaly detection for SNAP benefits and commodity markets.
 """
 import os
 import json
