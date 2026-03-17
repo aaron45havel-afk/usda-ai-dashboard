@@ -128,6 +128,20 @@
   .verdict-box .verdict-text { font-size: 13px; color: var(--text); line-height: 1.6; }
   .clickable-row { cursor: pointer; transition: background 0.15s; }
   .clickable-row:hover td { background: #EBF5FB !important; }
+
+  /* Multi-signal indicators */
+  .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-top: 12px; }
+  .signal-card { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 14px; border-left: 4px solid #ccc; }
+  .signal-card.flagged { border-left-color: #E74C3C; background: #FFF5F5; }
+  .signal-card.ok { border-left-color: #27AE60; background: #F0FFF4; }
+  .signal-name { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; color: var(--text-muted); }
+  .signal-status { font-size: 11px; font-weight: 600; display: inline-block; padding: 2px 8px; border-radius: 10px; }
+  .signal-status.triggered { background: #FDEDEC; color: #c0392b; }
+  .signal-status.clear { background: #EAFAF1; color: #1e8449; }
+  .signal-detail { font-size: 12px; color: var(--text); margin-top: 6px; line-height: 1.5; }
+  .composite-bar { display: flex; height: 28px; border-radius: 6px; overflow: hidden; background: #eee; margin: 12px 0; }
+  .composite-segment { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: white; min-width: 30px; }
+  .tag-multi { background: #8E44AD15; color: #8E44AD; }
 </style>
 </head>
 <body>
@@ -658,23 +672,27 @@ function renderWeather(data) {
 // RENDER: Anomalies
 // ---------------------------------------------------------------------------
 function renderAnomalies(data) {
+  const snapAnomalies = (data.anomalies || []).filter(a => a.data_source === 'snap_data');
+  const multiSignal = (data.anomalies || []).filter(a => a.anomaly_type === 'multi_signal');
   document.getElementById('anomalyMetrics').innerHTML = `
     <div class="metric-card danger">
       <div class="metric-label">Total Anomalies</div>
       <div class="metric-value">${data.total}</div>
+      <div class="metric-sub">${snapAnomalies.length} SNAP + ${data.total - snapAnomalies.length} commodity</div>
     </div>
     <div class="metric-card danger">
-      <div class="metric-label">High Risk (z &gt; 2.0)</div>
+      <div class="metric-label">High Risk (score &gt; 25)</div>
       <div class="metric-value">${data.high_risk}</div>
       <div class="metric-sub">Requires immediate review</div>
     </div>
     <div class="metric-card warning">
-      <div class="metric-label">Data Sources Flagged</div>
-      <div class="metric-value">${[...new Set((data.summary||[]).map(s=>s.data_source))].length}</div>
+      <div class="metric-label">Multi-Signal Flags</div>
+      <div class="metric-value">${multiSignal.length}</div>
+      <div class="metric-sub">2+ correlated signals triggered</div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">Anomaly Types</div>
-      <div class="metric-value">${[...new Set((data.summary||[]).map(s=>s.anomaly_type))].length}</div>
+      <div class="metric-label">Data Sources Flagged</div>
+      <div class="metric-value">${[...new Set((data.summary||[]).map(s=>s.data_source))].length}</div>
     </div>
   `;
 
@@ -775,11 +793,13 @@ function renderClickableAnomalyTable(headers, anomalies, showDetected = false) {
   if (!anomalies.length) return '<p style="color:var(--text-muted);font-size:13px;padding:12px">No anomalies detected</p>';
   const headerRow = headers.map(h => `<th>${h}</th>`).join('');
   const rows = anomalies.map(a => {
+    const typeTag = a.anomaly_type === 'multi_signal' ? 'tag-multi' : (a.anomaly_score > 25 ? 'tag-danger' : 'tag-warning');
+    const scoreDisplay = a.data_source === 'snap_data' ? a.anomaly_score.toFixed(0) + ' pts' : a.anomaly_score.toFixed(1);
     const cells = [
-      `<td><span class="tag tag-info">${a.data_source}</span></td>`,
-      `<td><span class="tag ${a.anomaly_score > 2 ? 'tag-danger' : 'tag-warning'}">${a.anomaly_type}</span></td>`,
-      `<td>${a.anomaly_score.toFixed(showDetected ? 3 : 2)}</td>`,
-      `<td>${showDetected ? a.description : (a.description||'').substring(0, 60) + '...'}</td>`,
+      `<td><span class="tag tag-info">${a.data_source === 'snap_data' ? 'SNAP' : 'Commodity'}</span></td>`,
+      `<td><span class="tag ${typeTag}">${a.anomaly_type.replace('_',' ')}</span></td>`,
+      `<td><strong>${scoreDisplay}</strong></td>`,
+      `<td>${showDetected ? a.description : (a.description||'').substring(0, 70) + '...'}</td>`,
     ];
     if (showDetected) cells.push(`<td>${a.detected_at ? new Date(a.detected_at).toLocaleString() : '—'}</td>`);
     return `<tr class="clickable-row" onclick="openDrilldown(${a.id})" title="Click to investigate this anomaly">${cells.join('')}</tr>`;
@@ -800,9 +820,10 @@ async function openDrilldown(anomalyId) {
     const calc = data.calculation || {};
     const record = data.flagged_record || {};
     const history = data.history || [];
+    const signals = data.signals || {};
 
     document.getElementById('drilldownTitle').textContent =
-      `Investigation: ${a.anomaly_type.replace('_', ' ').toUpperCase()} — ${a.data_source}`;
+      `Investigation: ${a.anomaly_type.replace('_', ' ').toUpperCase()} — ${a.data_source === 'snap_data' ? 'SNAP' : 'Commodity'}`;
 
     let html = '';
 
@@ -817,7 +838,8 @@ async function openDrilldown(anomalyId) {
         <div class="corr-card"><div class="corr-title">Period</div>${record.year}-${String(record.month).padStart(2,'0')}</div>
         <div class="corr-card"><div class="corr-title">Participants</div>${(record.participants||0).toLocaleString()}</div>
         <div class="corr-card"><div class="corr-title">Avg Benefit</div><strong style="color:#E74C3C">$${(record.avg_benefit_per_person||0).toFixed(2)}</strong></div>
-        <div class="corr-card"><div class="corr-title">Total Benefits</div>$${(record.benefits_millions||0).toFixed(1)}M</div>`;
+        <div class="corr-card"><div class="corr-title">Total Benefits</div>$${(record.benefits_millions||0).toFixed(1)}M</div>
+        <div class="corr-card"><div class="corr-title">Composite Score</div><strong style="color:#8E44AD">${parseFloat(a.anomaly_score).toFixed(0)} pts</strong></div>`;
     } else {
       html += `
         <div class="corr-card"><div class="corr-title">Commodity</div>${record.commodity || '—'}</div>
@@ -827,18 +849,89 @@ async function openDrilldown(anomalyId) {
     }
     html += '</div></div>';
 
-    // SECTION 2: How the Z-Score Was Calculated
+    // SECTION 2: Multi-Signal Breakdown (SNAP anomalies)
+    if (a.data_source === 'snap_data' && Object.keys(signals).length > 0) {
+      const signalNames = {
+        benefit_deviation: { label: 'Benefit Deviation', icon: '&#x1F4B0;', desc: 'Z-score of avg benefit vs state history', maxPts: 30 },
+        participation_economy: { label: 'Participation-Economy Divergence', icon: '&#x1F4C9;', desc: 'SNAP enrollment vs unemployment trends', maxPts: 25 },
+        benefit_inflation: { label: 'Benefit-Inflation Mismatch', icon: '&#x1F4CA;', desc: 'Benefit changes vs food CPI changes', maxPts: 20 },
+        qc_error_rate: { label: 'QC Error Rate Risk', icon: '&#x26A0;', desc: 'State QC payment error rate vs national avg', maxPts: 15 },
+        geographic_outlier: { label: 'Geographic Outlier', icon: '&#x1F5FA;', desc: 'Benefit level vs national peer average', maxPts: 10 },
+      };
+      const triggeredCount = Object.values(signals).filter(s => s && s.flag).length;
+
+      html += `<div class="drilldown-section">
+        <h3><span class="icon">&#x1F9E0;</span> Multi-Signal Analysis (${triggeredCount}/5 triggered)</h3>
+        <div class="signal-grid">`;
+
+      for (const [key, meta] of Object.entries(signalNames)) {
+        const sig = signals[key];
+        if (!sig) {
+          html += `<div class="signal-card ok">
+            <div class="signal-name">${meta.icon} ${meta.label} <span class="signal-status clear">NO DATA</span></div>
+            <div class="signal-detail">${meta.desc}</div>
+          </div>`;
+          continue;
+        }
+        const isFlagged = sig.flag;
+        html += `<div class="signal-card ${isFlagged ? 'flagged' : 'ok'}">
+          <div class="signal-name">${meta.icon} ${meta.label} <span class="signal-status ${isFlagged ? 'triggered' : 'clear'}">${isFlagged ? 'TRIGGERED' : 'CLEAR'}</span></div>
+          <div class="signal-detail">`;
+
+        if (key === 'benefit_deviation') {
+          html += `Benefit z-score: <strong>${sig.z_score.toFixed(2)}</strong> (threshold: 1.8)<br>
+            Value: $${sig.value.toFixed(2)} | Mean: $${sig.mean.toFixed(2)} | Std: $${sig.std.toFixed(2)}`;
+          if (sig.part_flag) {
+            html += `<br><strong style="color:#c0392b">Participation spike:</strong> z=${sig.participation_z.toFixed(2)} (${sig.participation.toLocaleString()} vs avg ${Math.round(sig.part_mean).toLocaleString()})`;
+          }
+        } else if (key === 'participation_economy') {
+          html += `Participation: <strong>${sig.participation_change > 0 ? '+' : ''}${sig.participation_change.toFixed(1)}%</strong> |
+            Unemployment: <strong>${sig.unemployment_change > 0 ? '+' : ''}${sig.unemployment_change.toFixed(1)}%</strong><br>
+            Divergence: <strong>${sig.divergence > 0 ? '+' : ''}${sig.divergence.toFixed(1)}%</strong> ${sig.flag ? '(participation rising faster than unemployment)' : ''}`;
+        } else if (key === 'benefit_inflation') {
+          html += `Benefit YoY: <strong>${sig.benefit_yoy_change > 0 ? '+' : ''}${sig.benefit_yoy_change.toFixed(1)}%</strong> |
+            Food CPI YoY: <strong>${sig.food_cpi_yoy_change > 0 ? '+' : ''}${sig.food_cpi_yoy_change.toFixed(1)}%</strong><br>
+            Mismatch: <strong>${sig.mismatch > 0 ? '+' : ''}${sig.mismatch.toFixed(1)}%</strong> ${Math.abs(sig.mismatch) > 3 ? '(benefits moving differently than food prices)' : ''}`;
+        } else if (key === 'qc_error_rate') {
+          html += `Error rate: <strong>${sig.error_rate.toFixed(1)}%</strong> (national avg: 10.93%)<br>
+            Above national: <strong>${sig.above_national > 0 ? '+' : ''}${sig.above_national.toFixed(1)}%</strong> |
+            Trend: <strong>${sig.trend > 0 ? '+' : ''}${sig.trend.toFixed(1)}%</strong> YoY`;
+        } else if (key === 'geographic_outlier') {
+          html += `Z vs national: <strong>${sig.z_vs_national.toFixed(2)}</strong> (threshold: 2.0)<br>
+            National mean: $${sig.national_mean.toFixed(2)}`;
+        }
+        html += `</div></div>`;
+      }
+      html += '</div></div>';
+
+      // Composite score bar
+      const score = parseFloat(a.anomaly_score);
+      const barWidth = Math.min(score / 100 * 100, 100);
+      const barColor = score > 50 ? '#c0392b' : score > 25 ? '#e67e22' : '#27ae60';
+      html += `<div class="drilldown-section">
+        <h3><span class="icon">&#x1F3AF;</span> Composite Risk Score</h3>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="flex:1;height:28px;background:#eee;border-radius:6px;overflow:hidden;">
+            <div style="width:${barWidth}%;height:100%;background:${barColor};border-radius:6px;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700;">${score.toFixed(0)} pts</div>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);white-space:nowrap;">/ 100 max</div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Flags if: composite &gt; 25 OR benefit z-score &gt; 2.5 OR 3+ signals triggered</div>
+      </div>`;
+    }
+
+    // SECTION 3: Z-Score Calculation (still useful for both SNAP and commodity)
     if (calc.formula) {
       const severity = calc.z_score > 3.0 ? 'STRONG' : calc.z_score > 2.0 ? 'MODERATE' : 'WEAK';
       const sevColor = calc.z_score > 3.0 ? '#c0392b' : calc.z_score > 2.0 ? '#e67e22' : '#27ae60';
       html += `<div class="drilldown-section">
-        <h3><span class="icon">&#x1F9EE;</span> Z-Score Calculation (Step by Step)</h3>
+        <h3><span class="icon">&#x1F9EE;</span> ${a.data_source === 'snap_data' ? 'Signal 1 Detail: ' : ''}Z-Score Calculation</h3>
         <div class="calc-box">
           <div><strong>1. Collected</strong> <span class="highlight">${calc.n_observations} monthly observations</span> for this ${a.data_source === 'snap_data' ? 'state' : 'commodity'}</div>
           <div><strong>2. Computed mean:</strong> $${calc.mean.toFixed(2)}</div>
           <div><strong>3. Computed sample std dev (N-1):</strong> $${calc.std_dev.toFixed(2)}</div>
           <div><strong>4. Flagged value:</strong> <span class="highlight">$${calc.flagged_value.toFixed(2)}</span></div>
-          <div class="formula">z = |$${calc.flagged_value.toFixed(2)} − $${calc.mean.toFixed(2)}| ÷ $${calc.std_dev.toFixed(2)} = <span class="result">${calc.z_score.toFixed(3)}</span></div>
+          <div class="formula">z = |$${calc.flagged_value.toFixed(2)} - $${calc.mean.toFixed(2)}| / $${calc.std_dev.toFixed(2)} = <span class="result">${calc.z_score.toFixed(3)}</span></div>
           <div><strong>Threshold:</strong> z &gt; ${calc.threshold} triggers flag</div>
           <div><strong>Percentile:</strong> This value is higher than <span class="highlight">${calc.percentile}%</span> of all observations</div>
           <div style="margin-top:10px;padding:10px;background:${sevColor}15;border-radius:6px;border-left:4px solid ${sevColor};">
@@ -849,13 +942,13 @@ async function openDrilldown(anomalyId) {
       </div>`;
     }
 
-    // SECTION 3: Historical Trend Chart
+    // SECTION 4: Historical Trend Chart
     html += `<div class="drilldown-section">
       <h3><span class="icon">&#x1F4C8;</span> Historical Trend</h3>
       <div style="height:250px;"><canvas id="drilldownChart"></canvas></div>
     </div>`;
 
-    // SECTION 4: Corroboration Sources
+    // SECTION 5: Corroboration Sources
     if (data.corroboration && data.corroboration.length > 0) {
       html += `<div class="drilldown-section">
         <h3><span class="icon">&#x1F50D;</span> Cross-Reference Data</h3>`;
@@ -866,7 +959,7 @@ async function openDrilldown(anomalyId) {
           if (corr.source === 'Concurrent SNAP Anomalies') {
             html += '<div style="margin:8px 0;font-size:12px;">';
             corr.data.forEach(d => {
-              html += `<div style="margin:2px 0">&#x26A0; <strong>${d.state}</strong>: $${(d.avg_benefit_per_person||0).toFixed(2)} avg benefit (z=${(d.anomaly_score||0).toFixed(2)})</div>`;
+              html += `<div style="margin:2px 0">&#x26A0; <strong>${d.state}</strong>: $${(d.avg_benefit_per_person||0).toFixed(2)} avg benefit (score=${(d.anomaly_score||0).toFixed(0)})</div>`;
             });
             html += '</div>';
           } else if (corr.source === 'AMS Commodity Prices') {
@@ -890,7 +983,7 @@ async function openDrilldown(anomalyId) {
       html += '</div>';
     }
 
-    // SECTION 5: Fetch external corroboration (BLS, FEMA)
+    // SECTION 6: Fetch external corroboration (BLS, FEMA)
     if (a.data_source === 'snap_data' && record.state && record.year && record.month) {
       html += `<div class="drilldown-section" id="externalCorr">
         <h3><span class="icon">&#x1F30D;</span> External Intelligence (Live APIs)</h3>
@@ -898,18 +991,31 @@ async function openDrilldown(anomalyId) {
       </div>`;
     }
 
-    // SECTION 6: AI Verdict
+    // SECTION 7: AI Verdict
     const concurrent = (data.corroboration || []).find(c => c.source === 'Concurrent SNAP Anomalies');
     const concurrentCount = concurrent ? concurrent.data.length : 0;
+    const triggeredSignals = Object.values(signals).filter(s => s && s.flag).length;
+    const compositeScore = parseFloat(a.anomaly_score) || 0;
     let verdictText, verdictLevel;
-    if (calc.z_score > 3.5 && concurrentCount === 0) {
-      verdictLevel = 'HIGH RISK'; verdictText = `Isolated spike of z=${calc.z_score.toFixed(1)} with no concurrent state anomalies. This pattern is consistent with state-level data entry error, localized policy override, or potential improper payment. Recommend: cross-reference with FNS QC sampling reports and state agency disbursement logs.`;
-    } else if (calc.z_score > 3.0 && concurrentCount > 2) {
-      verdictLevel = 'SYSTEMIC — LIKELY LEGITIMATE'; verdictText = `Strong spike but ${concurrentCount + 1} states flagged simultaneously. This pattern suggests a federal-level cause: COLA adjustment, emergency allotment, or policy change. Recommend: verify against Federal Register notices and FNS policy memos for this period.`;
-    } else if (calc.z_score > 2.0) {
-      verdictLevel = 'MODERATE — NEEDS REVIEW'; verdictText = `Notable deviation worth investigating. Check if state reported D-SNAP activations, benefit recalculations, or data corrections for this period. Cross-reference with BLS food CPI trends.`;
+
+    if (compositeScore > 50 && concurrentCount === 0) {
+      verdictLevel = 'HIGH RISK';
+      verdictText = `Composite score of ${compositeScore.toFixed(0)} with ${triggeredSignals} signals triggered and no concurrent state anomalies. This isolated pattern is consistent with state-level data entry error, localized policy override, or potential improper payment. Recommend: cross-reference with FNS QC sampling reports and state agency disbursement logs.`;
+    } else if (compositeScore > 30 && concurrentCount > 2) {
+      verdictLevel = 'SYSTEMIC — LIKELY LEGITIMATE';
+      verdictText = `Score of ${compositeScore.toFixed(0)} but ${concurrentCount + 1} states flagged simultaneously. This pattern suggests a federal-level cause: COLA adjustment, emergency allotment, or policy change. Recommend: verify against Federal Register notices and FNS policy memos for this period.`;
+    } else if (compositeScore > 25 || triggeredSignals >= 3) {
+      verdictLevel = 'MODERATE — NEEDS REVIEW';
+      verdictText = `${triggeredSignals} correlated signals triggered with a composite score of ${compositeScore.toFixed(0)}. Check if state reported D-SNAP activations, benefit recalculations, or data corrections for this period. Cross-reference with BLS food CPI trends and QC error rates.`;
+    } else if (a.data_source === 'commodity_prices') {
+      const zScore = calc.z_score || 0;
+      verdictLevel = zScore > 2.5 ? 'NOTABLE — MARKET EVENT' : 'LOW RISK';
+      verdictText = zScore > 2.5
+        ? `Price deviation of z=${zScore.toFixed(1)} suggests a significant market event. Check USDA Grain Transportation Reports, weather events, and trade policy changes.`
+        : `Mild price outlier, likely within normal market volatility. No immediate action required.`;
     } else {
-      verdictLevel = 'LOW RISK'; verdictText = `Mild statistical outlier, likely within normal benefit variation. No immediate action required but include in quarterly review.`;
+      verdictLevel = 'LOW RISK';
+      verdictText = `Mild statistical outlier with ${triggeredSignals} signal(s). Likely within normal benefit variation. No immediate action required but include in quarterly review.`;
     }
 
     html += `<div class="drilldown-section">
@@ -938,7 +1044,7 @@ async function openDrilldown(anomalyId) {
               datasets: [
                 { label: 'Avg Benefit/Person ($)', data: values, borderColor: '#2E86C1', backgroundColor: 'rgba(46,134,193,0.1)', fill: true, tension: 0.3, pointBackgroundColor: pointColors, pointRadius: pointSizes },
                 { label: 'Mean', data: Array(values.length).fill(calc.mean), borderColor: '#95a5a6', borderDash: [5, 5], pointRadius: 0, fill: false },
-                { label: '+1.8σ Threshold', data: Array(values.length).fill(calc.mean + 1.8 * calc.std_dev), borderColor: '#E74C3C', borderDash: [3, 3], pointRadius: 0, fill: false },
+                { label: '+1.8 Threshold', data: Array(values.length).fill(calc.mean + 1.8 * calc.std_dev), borderColor: '#E74C3C', borderDash: [3, 3], pointRadius: 0, fill: false },
               ]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } },
@@ -957,7 +1063,7 @@ async function openDrilldown(anomalyId) {
               datasets: [
                 { label: `${record.commodity} Price`, data: values, borderColor: '#2E86C1', backgroundColor: 'rgba(46,134,193,0.1)', fill: true, tension: 0.3, pointBackgroundColor: pointColors, pointRadius: pointSizes },
                 { label: 'Mean', data: Array(values.length).fill(calc.mean), borderColor: '#95a5a6', borderDash: [5, 5], pointRadius: 0, fill: false },
-                { label: `±${calc.threshold}σ`, data: Array(values.length).fill(calc.mean + calc.threshold * calc.std_dev), borderColor: '#E74C3C', borderDash: [3, 3], pointRadius: 0, fill: false },
+                { label: `+${calc.threshold} Threshold`, data: Array(values.length).fill(calc.mean + calc.threshold * calc.std_dev), borderColor: '#E74C3C', borderDash: [3, 3], pointRadius: 0, fill: false },
               ]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } },
