@@ -48,6 +48,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS snap_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             state TEXT,
+            county TEXT DEFAULT '',
+            county_fips TEXT DEFAULT '',
             year INTEGER,
             month INTEGER,
             participants INTEGER,
@@ -62,6 +64,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS weather_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             state TEXT,
+            county TEXT DEFAULT '',
+            county_fips TEXT DEFAULT '',
             station TEXT,
             date TEXT,
             temp_avg REAL,
@@ -96,11 +100,18 @@ def init_db():
         )
     """)
 
-    # Migration: add signals column if missing
+    # Migrations for existing databases
     try:
         cursor.execute("SELECT signals FROM anomaly_scores LIMIT 1")
     except sqlite3.OperationalError:
         cursor.execute("ALTER TABLE anomaly_scores ADD COLUMN signals TEXT")
+
+    for tbl, cols in [("snap_data", ["county", "county_fips"]), ("weather_data", ["county", "county_fips"])]:
+        for col in cols:
+            try:
+                cursor.execute(f"SELECT {col} FROM {tbl} LIMIT 1")
+            except sqlite3.OperationalError:
+                cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT DEFAULT ''")
 
     conn.commit()
     conn.close()
