@@ -22,25 +22,33 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 # REAL DATA LOADERS — CSV files sourced from published USDA/BLS reports
 # ---------------------------------------------------------------------------
 def load_real_snap_data():
-    """Load SNAP data from FNS-sourced CSV (state-level monthly participation & benefits).
+    """Load SNAP data from FNS-sourced CSV — county-level where available, state-level fallback.
     Source: USDA FNS SNAP Data Tables, FY2023-2025
     https://www.fns.usda.gov/pd/supplemental-nutrition-assistance-program-snap
     """
-    csv_path = os.path.join(DATA_DIR, "snap_state_monthly.csv")
+    # Try county-level first, fall back to state-level
+    csv_path = os.path.join(DATA_DIR, "snap_county_monthly.csv")
+    if not os.path.exists(csv_path):
+        csv_path = os.path.join(DATA_DIR, "snap_state_monthly.csv")
+
     records = []
     try:
         with open(csv_path, "r") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                records.append({
+                rec = {
                     "state": row["state"],
+                    "county": row.get("county", ""),
+                    "county_fips": row.get("county_fips", ""),
                     "year": int(row["year"]),
                     "month": int(row["month"]),
                     "participants": int(row["participants"]),
                     "benefits_millions": float(row["benefits_millions"]),
                     "avg_benefit_per_person": float(row["avg_benefit_per_person"]),
-                })
-        print(f"[SNAP] Loaded {len(records)} real records from FNS data", flush=True)
+                }
+                records.append(rec)
+        county_count = sum(1 for r in records if r["county"])
+        print(f"[SNAP] Loaded {len(records)} records ({county_count} county-level) from FNS data", flush=True)
         log_api_call("FNS/SNAP-CSV", 200, len(records))
     except Exception as e:
         print(f"[SNAP] CSV load failed: {e} — falling back to seed data", flush=True)
@@ -259,90 +267,147 @@ async def fetch_snap_data():
 
 
 # ---------------------------------------------------------------------------
-# TIER 3 — NOAA Weather & Climate Data
+# TIER 3 — NOAA ACIS County-Level Weather Data
 # ---------------------------------------------------------------------------
+ACIS_URL = "https://data.rcc-acis.org/GridData"
+
+# Agricultural counties with FIPS codes for weather monitoring
+AG_COUNTIES = [
+    {"state": "Illinois", "county": "McLean", "fips": "17113"},
+    {"state": "Illinois", "county": "Champaign", "fips": "17019"},
+    {"state": "Illinois", "county": "Cook", "fips": "17031"},
+    {"state": "Iowa", "county": "Polk", "fips": "19153"},
+    {"state": "Iowa", "county": "Story", "fips": "19169"},
+    {"state": "Kansas", "county": "Sedgwick", "fips": "20173"},
+    {"state": "Kansas", "county": "Finney", "fips": "20055"},
+    {"state": "Minnesota", "county": "Blue Earth", "fips": "27013"},
+    {"state": "Minnesota", "county": "Stearns", "fips": "27145"},
+    {"state": "Nebraska", "county": "Lancaster", "fips": "31109"},
+    {"state": "Nebraska", "county": "Hall", "fips": "31079"},
+    {"state": "Georgia", "county": "Colquitt", "fips": "13071"},
+    {"state": "Georgia", "county": "Fulton", "fips": "13121"},
+    {"state": "Florida", "county": "Miami-Dade", "fips": "12086"},
+    {"state": "Florida", "county": "Hillsborough", "fips": "12057"},
+    {"state": "California", "county": "Fresno", "fips": "06019"},
+    {"state": "California", "county": "Kern", "fips": "06029"},
+    {"state": "Texas", "county": "Hidalgo", "fips": "48215"},
+    {"state": "Texas", "county": "Harris", "fips": "48201"},
+    {"state": "North Carolina", "county": "Robeson", "fips": "37155"},
+]
+
 async def fetch_weather_data():
-    """Fetch weather data for agricultural regions from NOAA."""
-    if not NOAA_API_TOKEN:
-        print("[NOAA] No API token — using seed data", flush=True)
-        log_api_call("NOAA/Weather", 0, 0, "No API key configured — using seed data")
-        records = seed_weather_data()
-        save_weather_data(records)
-        return records
-
-    # Use specific GHCND stations (major ag-region airports) — station-level
-    # queries return TMAX/TMIN/PRCP reliably, unlike state-level FIPS.
-    farm_stations = [
-        {"station": "GHCND:USW00094846", "name": "Illinois"},      # Chicago Midway
-        {"station": "GHCND:USW00014933", "name": "Iowa"},          # Des Moines
-        {"station": "GHCND:USW00013996", "name": "Kansas"},        # Wichita
-        {"station": "GHCND:USW00014922", "name": "Minnesota"},     # Minneapolis
-        {"station": "GHCND:USW00014942", "name": "Nebraska"},      # Omaha
-    ]
-
+    """Fetch county-level daily weather from NOAA ACIS (no API key needed).
+    Uses GridData endpoint with county FIPS codes for TMAX, TMIN, PRCP.
+    Falls back to NOAA CDO station data, then seed data."""
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-    # Collect raw observations keyed by (state, date) so we can merge
-    # TMAX/TMIN/PRCP into one row per state-date.
-    merged = {}  # key: (state_name, date_str) -> dict
+    records = []
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for cty in AG_COUNTIES:
+            try:
+                # ACIS GridData: county-level gridded averages
+                payload = {
+                    "county": cty["fips"],
+                    "sdate": start_date,
+                    "edate": end_date,
+                    "grid": "21",  # nClimGrid — NOAA's official gridded dataset
+                    "elems": [
+                        {"name": "maxt", "area_reduce": "county_mean"},
+                        {"name": "mint", "area_reduce": "county_mean"},
+                        {"name": "pcpn", "area_reduce": "county_mean"},
+                    ],
+                    "output": "json",
+                }
+                resp = await client.post(ACIS_URL, json=payload)
 
+                if resp.status_code == 200:
+                    data = resp.json()
+                    county_data = data.get("data", [])
+                    for day in county_data:
+                        # day format: [date, tmax, tmin, pcpn]
+                        date_str = day[0]
+                        tmax = day[1] if day[1] not in ("M", "-999", None) else None
+                        tmin = day[2] if day[2] not in ("M", "-999", None) else None
+                        pcpn = day[3] if day[3] not in ("M", "-999", None) else None
+
+                        temp_avg = None
+                        if tmax is not None and tmin is not None:
+                            try:
+                                temp_avg = round((float(tmax) + float(tmin)) / 2, 1)
+                            except (ValueError, TypeError):
+                                pass
+
+                        records.append({
+                            "state": cty["state"],
+                            "county": cty["county"],
+                            "county_fips": cty["fips"],
+                            "station": "ACIS-Grid",
+                            "date": date_str,
+                            "temp_avg": temp_avg,
+                            "precip": float(pcpn) if pcpn is not None else None,
+                            "drought_index": None,
+                        })
+                    log_api_call(f"ACIS/{cty['state']}/{cty['county']}", resp.status_code, len(county_data))
+                else:
+                    log_api_call(f"ACIS/{cty['state']}/{cty['county']}", resp.status_code, 0, resp.text[:200])
+            except Exception as e:
+                log_api_call(f"ACIS/{cty['state']}/{cty['county']}", 0, 0, str(e)[:200])
+
+    if not records:
+        # Fall back to NOAA CDO station data if ACIS fails
+        if NOAA_API_TOKEN:
+            records = await _fetch_noaa_station_weather()
+        if not records:
+            records = seed_weather_data()
+
+    save_weather_data(records)
+    print(f"[Weather] Saved {len(records)} county-level weather records", flush=True)
+    return records
+
+
+async def _fetch_noaa_station_weather():
+    """Fallback: fetch from NOAA CDO station-level API."""
+    farm_stations = [
+        {"station": "GHCND:USW00094846", "name": "Illinois", "county": "Cook", "fips": "17031"},
+        {"station": "GHCND:USW00014933", "name": "Iowa", "county": "Polk", "fips": "19153"},
+        {"station": "GHCND:USW00013996", "name": "Kansas", "county": "Sedgwick", "fips": "20173"},
+        {"station": "GHCND:USW00014922", "name": "Minnesota", "county": "Hennepin", "fips": "27053"},
+        {"station": "GHCND:USW00014942", "name": "Nebraska", "county": "Douglas", "fips": "31055"},
+    ]
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    merged = {}
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         for st in farm_stations:
             try:
                 params = {
-                    "datasetid": "GHCND",
-                    "stationid": st["station"],
-                    "startdate": start_date,
-                    "enddate": end_date,
-                    "datatypeid": "TMAX,TMIN,PRCP",
-                    "units": "standard",
-                    "limit": 100,
+                    "datasetid": "GHCND", "stationid": st["station"],
+                    "startdate": start_date, "enddate": end_date,
+                    "datatypeid": "TMAX,TMIN,PRCP", "units": "standard", "limit": 100,
                 }
                 headers = {"token": NOAA_API_TOKEN}
                 resp = await client.get(f"{NOAA_BASE_URL}/data", params=params, headers=headers)
-
                 if resp.status_code == 200:
-                    data = resp.json().get("results", [])
-                    for item in data:
+                    for item in resp.json().get("results", []):
                         date_str = item.get("date", "")[:10]
                         key = (st["name"], date_str)
                         if key not in merged:
-                            merged[key] = {"state": st["name"], "date": date_str, "tmax": None, "tmin": None, "precip": None}
-                        dt = item.get("datatype")
-                        val = item.get("value")
-                        if dt == "TMAX":
-                            merged[key]["tmax"] = val
-                        elif dt == "TMIN":
-                            merged[key]["tmin"] = val
-                        elif dt == "PRCP":
-                            merged[key]["precip"] = val
-                    log_api_call(f"NOAA/{st['name']}", resp.status_code, len(data))
-                else:
-                    log_api_call(f"NOAA/{st['name']}", resp.status_code, 0, resp.text[:200])
+                            merged[key] = {"state": st["name"], "county": st["county"], "fips": st["fips"],
+                                          "date": date_str, "tmax": None, "tmin": None, "precip": None}
+                        dt, val = item.get("datatype"), item.get("value")
+                        if dt == "TMAX": merged[key]["tmax"] = val
+                        elif dt == "TMIN": merged[key]["tmin"] = val
+                        elif dt == "PRCP": merged[key]["precip"] = val
+                    log_api_call(f"NOAA/{st['name']}", resp.status_code, len(resp.json().get("results", [])))
             except Exception as e:
                 log_api_call(f"NOAA/{st['name']}", 0, 0, str(e)[:200])
 
-    # Build final records — compute temp_avg from (TMAX + TMIN) / 2
     records = []
-    for key in sorted(merged.keys()):
-        m = merged[key]
-        temp_avg = None
-        if m["tmax"] is not None and m["tmin"] is not None:
-            temp_avg = round((m["tmax"] + m["tmin"]) / 2, 1)
-        records.append({
-            "state": m["state"],
-            "station": "",
-            "date": m["date"],
-            "temp_avg": temp_avg,
-            "precip": m["precip"],
-            "drought_index": None,
-        })
-
-    if not records:
-        records = seed_weather_data()
-
-    save_weather_data(records)
+    for m in merged.values():
+        temp_avg = round((m["tmax"] + m["tmin"]) / 2, 1) if m["tmax"] is not None and m["tmin"] is not None else None
+        records.append({"state": m["state"], "county": m["county"], "county_fips": m["fips"],
+                       "station": "", "date": m["date"], "temp_avg": temp_avg, "precip": m["precip"], "drought_index": None})
     return records
 
 
@@ -382,20 +447,21 @@ def run_anomaly_detection():
     for c in cpi_data:
         cpi_by_month[(c["year"], c["month"])] = c["cpi_food_at_home"]
 
-    # ---- Load SNAP data ----
+    # ---- Load SNAP data (county-level where available) ----
     rows = conn.execute("""
-        SELECT id, state, year, month, participants, benefits_millions, avg_benefit_per_person
-        FROM snap_data ORDER BY state, year, month
+        SELECT id, state, county, county_fips, year, month, participants, benefits_millions, avg_benefit_per_person
+        FROM snap_data ORDER BY state, county, year, month
     """).fetchall()
 
-    state_data = {}
+    # Group by location: (state, county) for county-level, (state, '') for state-level
+    location_data = {}
     all_benefits = []
     for row in rows:
-        key = row["state"]
-        if key not in state_data:
-            state_data[key] = []
+        key = (row["state"], row["county"] or "")
+        if key not in location_data:
+            location_data[key] = []
         d = dict(row)
-        state_data[key].append(d)
+        location_data[key].append(d)
         if d["avg_benefit_per_person"]:
             all_benefits.append(d["avg_benefit_per_person"])
 
@@ -403,18 +469,20 @@ def run_anomaly_detection():
     national_mean = sum(all_benefits) / len(all_benefits) if all_benefits else 0
     national_std = (sum((x - national_mean) ** 2 for x in all_benefits) / max(len(all_benefits) - 1, 1)) ** 0.5
 
-    for state, data_points in state_data.items():
+    for (state, county), data_points in location_data.items():
         if len(data_points) < 3:
             continue
+
+        location_label = f"{county}, {state}" if county else state
 
         avg_ben = [d["avg_benefit_per_person"] for d in data_points if d["avg_benefit_per_person"]]
         parts = [d["participants"] for d in data_points if d["participants"]]
         if not avg_ben:
             continue
-        state_mean = sum(avg_ben) / len(avg_ben)
-        state_std = (sum((x - state_mean) ** 2 for x in avg_ben) / (len(avg_ben) - 1)) ** 0.5
-        if state_std == 0:
-            state_std = 0.01  # prevent division by zero, use tiny std
+        loc_mean = sum(avg_ben) / len(avg_ben)
+        loc_std = (sum((x - loc_mean) ** 2 for x in avg_ben) / (len(avg_ben) - 1)) ** 0.5
+        if loc_std == 0:
+            loc_std = 0.01  # prevent division by zero, use tiny std
         # Also compute participation stats for spike detection
         part_mean = sum(parts) / len(parts) if parts else 0
         part_std = (sum((x - part_mean) ** 2 for x in parts) / max(len(parts) - 1, 1)) ** 0.5 if len(parts) > 1 else 0
@@ -427,8 +495,8 @@ def run_anomaly_detection():
             composite_score = 0
             signal_count = 0
 
-            # SIGNAL 1: Benefit Deviation (z-score within state)
-            z_benefit = abs(dp["avg_benefit_per_person"] - state_mean) / state_std
+            # SIGNAL 1: Benefit Deviation (z-score within location history)
+            z_benefit = abs(dp["avg_benefit_per_person"] - loc_mean) / loc_std
             # Also check participation spike
             z_part = abs(dp["participants"] - part_mean) / part_std if part_std > 0 else 0
             benefit_flag = z_benefit > 1.8
@@ -436,13 +504,14 @@ def run_anomaly_detection():
             signals["benefit_deviation"] = {
                 "z_score": round(z_benefit, 3),
                 "value": dp["avg_benefit_per_person"],
-                "mean": round(state_mean, 2),
-                "std": round(state_std, 2),
+                "mean": round(loc_mean, 2),
+                "std": round(loc_std, 2),
                 "flag": benefit_flag or part_flag,
                 "participation_z": round(z_part, 3),
                 "participation": dp["participants"],
                 "part_mean": round(part_mean, 0),
                 "part_flag": part_flag,
+                "location": location_label,
             }
             if benefit_flag:
                 composite_score += min(z_benefit / 4.0, 1.0) * 30  # max 30 pts
@@ -451,26 +520,23 @@ def run_anomaly_detection():
                 composite_score += min(z_part / 4.0, 1.0) * 20  # max 20 pts for participation spike
                 signal_count += 1
 
-            # SIGNAL 2: Participation-Economy Divergence
+            # SIGNAL 2: Participation-Economy Divergence (uses state-level unemployment)
             unemp = unemp_by_state.get((state, dp["year"], dp["month"]))
             if unemp is not None and len(data_points) > 1:
-                # Get prior period participation
                 prior = [p for p in data_points
                          if (p["year"] * 12 + p["month"]) < (dp["year"] * 12 + dp["month"])]
                 if prior:
                     prev = prior[-1]
                     part_change = (dp["participants"] - prev["participants"]) / max(prev["participants"], 1)
-                    # Get prior unemployment
                     prev_unemp = unemp_by_state.get((state, prev["year"], prev["month"]))
                     if prev_unemp and prev_unemp > 0:
                         unemp_change = (unemp - prev_unemp) / prev_unemp
-                        # Divergence: participation up but unemployment down = suspicious
                         divergence = part_change - unemp_change
                         signals["participation_economy"] = {
                             "participation_change": round(part_change * 100, 2),
                             "unemployment_change": round(unemp_change * 100, 2),
                             "divergence": round(divergence * 100, 2),
-                            "flag": divergence > 0.05,  # participation growing 5%+ faster than unemployment
+                            "flag": divergence > 0.05,
                         }
                         if divergence > 0.05:
                             composite_score += min(divergence * 200, 25)  # max 25 pts
@@ -478,11 +544,9 @@ def run_anomaly_detection():
 
             # SIGNAL 3: Benefit-Inflation Mismatch
             cpi_current = cpi_by_month.get((dp["year"], dp["month"]))
-            # Get CPI from 12 months ago
             cpi_prior = cpi_by_month.get((dp["year"] - 1, dp["month"]))
             if cpi_current and cpi_prior and cpi_prior > 0:
                 cpi_change = (cpi_current - cpi_prior) / cpi_prior
-                # Get benefit change over same period
                 prior_year_ben = [p for p in data_points
                                   if p["year"] == dp["year"] - 1 and p["month"] == dp["month"]]
                 if prior_year_ben:
@@ -492,17 +556,17 @@ def run_anomaly_detection():
                         "benefit_yoy_change": round(ben_change * 100, 2),
                         "food_cpi_yoy_change": round(cpi_change * 100, 2),
                         "mismatch": round(mismatch * 100, 2),
-                        "flag": abs(mismatch) > 0.03,  # benefit moving 3%+ differently than CPI
+                        "flag": abs(mismatch) > 0.03,
                     }
                     if abs(mismatch) > 0.03:
                         composite_score += min(abs(mismatch) * 300, 20)  # max 20 pts
                         signal_count += 1
 
-            # SIGNAL 4: QC Error Rate Risk
+            # SIGNAL 4: QC Error Rate Risk (state-level — applies to all counties in state)
             qc = qc_by_state.get((state, dp["year"]))
             qc_prior = qc_by_state.get((state, dp["year"] - 1))
             if qc:
-                error_above_national = qc["total_error_rate"] - 10.93  # FY2024 national
+                error_above_national = qc["total_error_rate"] - 10.93
                 error_trend = (qc["total_error_rate"] - qc_prior["total_error_rate"]) if qc_prior else 0
                 signals["qc_error_rate"] = {
                     "error_rate": qc["total_error_rate"],
@@ -529,21 +593,25 @@ def run_anomaly_detection():
                     composite_score += min(z_national / 3.0, 1.0) * 10  # max 10 pts
                     signal_count += 1
 
-            # Determine if this is a flagged anomaly
-            # Flag if: composite > 25 OR benefit z-score alone > 2.5 OR 3+ signals triggered
-            should_flag = composite_score > 25 or z_benefit > 2.5 or signal_count >= 3
+            # Skip "Other" catch-all county buckets (noisy remainder calculations)
+            if county and county.startswith("Other "):
+                continue
+
+            # County-level: require strong local signal (benefit or participation deviation)
+            # to prevent state-level signals (QC, CPI) from producing false positives
+            has_local_signal = benefit_flag or part_flag
+            should_flag = (composite_score > 55 and has_local_signal) or z_benefit > 4.0 or (part_flag and z_part > 4.0)
 
             if should_flag:
-                # Build description
                 triggered = [k for k, v in signals.items() if v.get("flag")]
-                desc_parts = [f"{state} {dp['year']}-{dp['month']:02d}: avg benefit ${dp['avg_benefit_per_person']:.2f}"]
+                desc_parts = [f"{location_label} {dp['year']}-{dp['month']:02d}: avg benefit ${dp['avg_benefit_per_person']:.2f}"]
                 desc_parts.append(f"(composite={composite_score:.0f}, signals={signal_count}: {', '.join(triggered)})")
 
                 anomalies.append({
                     "data_source": "snap_data",
                     "record_id": dp["id"],
                     "anomaly_score": round(composite_score, 1),
-                    "anomaly_type": "multi_signal" if signal_count >= 2 else ("benefit_spike" if dp["avg_benefit_per_person"] > state_mean else "benefit_drop"),
+                    "anomaly_type": "multi_signal" if signal_count >= 2 else ("benefit_spike" if dp["avg_benefit_per_person"] > loc_mean else "benefit_drop"),
                     "description": " ".join(desc_parts),
                     "signals": json.dumps(signals),
                 })
@@ -748,9 +816,10 @@ def save_snap_data(records):
     conn.execute("DELETE FROM snap_data")
     for r in records:
         conn.execute(
-            "INSERT INTO snap_data (state, year, month, participants, benefits_millions, avg_benefit_per_person) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (r["state"], r["year"], r["month"], r["participants"], r["benefits_millions"], r["avg_benefit_per_person"]),
+            "INSERT INTO snap_data (state, county, county_fips, year, month, participants, benefits_millions, avg_benefit_per_person) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (r["state"], r.get("county", ""), r.get("county_fips", ""),
+             r["year"], r["month"], r["participants"], r["benefits_millions"], r["avg_benefit_per_person"]),
         )
     conn.commit()
     conn.close()
@@ -761,8 +830,10 @@ def save_weather_data(records):
     conn.execute("DELETE FROM weather_data")
     for r in records:
         conn.execute(
-            "INSERT INTO weather_data (state, station, date, temp_avg, precip, drought_index) VALUES (?, ?, ?, ?, ?, ?)",
-            (r["state"], r["station"], r["date"], r.get("temp_avg"), r.get("precip"), r.get("drought_index")),
+            "INSERT INTO weather_data (state, county, county_fips, station, date, temp_avg, precip, drought_index) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (r["state"], r.get("county", ""), r.get("county_fips", ""),
+             r.get("station", ""), r["date"], r.get("temp_avg"), r.get("precip"), r.get("drought_index")),
         )
     conn.commit()
     conn.close()
