@@ -248,7 +248,7 @@ async def get_anomalies():
     conn = get_db()
     try:
         rows = conn.execute("""
-            SELECT data_source, record_id, anomaly_score, anomaly_type, description, detected_at
+            SELECT id, data_source, record_id, anomaly_score, anomaly_type, description, detected_at
             FROM anomaly_scores
             ORDER BY anomaly_score DESC
         """).fetchall()
