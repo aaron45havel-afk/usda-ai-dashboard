@@ -270,30 +270,32 @@ async def fetch_weather_data():
         save_weather_data(records)
         return records
 
-    farm_states = [
-        {"fips": "FIPS:17", "name": "Illinois"},
-        {"fips": "FIPS:19", "name": "Iowa"},
-        {"fips": "FIPS:20", "name": "Kansas"},
-        {"fips": "FIPS:27", "name": "Minnesota"},
-        {"fips": "FIPS:31", "name": "Nebraska"},
+    # Use specific GHCND stations (major ag-region airports) — station-level
+    # queries return TMAX/TMIN/PRCP reliably, unlike state-level FIPS.
+    farm_stations = [
+        {"station": "GHCND:USW00094846", "name": "Illinois"},      # Chicago Midway
+        {"station": "GHCND:USW00014933", "name": "Iowa"},          # Des Moines
+        {"station": "GHCND:USW00013996", "name": "Kansas"},        # Wichita
+        {"station": "GHCND:USW00014922", "name": "Minnesota"},     # Minneapolis
+        {"station": "GHCND:USW00014942", "name": "Nebraska"},      # Omaha
     ]
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
     # Collect raw observations keyed by (state, date) so we can merge
-    # TMAX/TMIN/TAVG/PRCP into one row per state-date.
+    # TMAX/TMIN/PRCP into one row per state-date.
     merged = {}  # key: (state_name, date_str) -> dict
 
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        for state in farm_states:
+        for st in farm_stations:
             try:
                 params = {
                     "datasetid": "GHCND",
-                    "locationid": state["fips"],
+                    "stationid": st["station"],
                     "startdate": start_date,
                     "enddate": end_date,
-                    "datatypeid": "TAVG,TMAX,TMIN,PRCP",
+                    "datatypeid": "TMAX,TMIN,PRCP",
                     "units": "standard",
                     "limit": 100,
                 }
@@ -304,31 +306,29 @@ async def fetch_weather_data():
                     data = resp.json().get("results", [])
                     for item in data:
                         date_str = item.get("date", "")[:10]
-                        key = (state["name"], date_str)
+                        key = (st["name"], date_str)
                         if key not in merged:
-                            merged[key] = {"state": state["name"], "date": date_str, "tavg": None, "tmax": None, "tmin": None, "precip": None}
+                            merged[key] = {"state": st["name"], "date": date_str, "tmax": None, "tmin": None, "precip": None}
                         dt = item.get("datatype")
                         val = item.get("value")
-                        if dt == "TAVG":
-                            merged[key]["tavg"] = val
-                        elif dt == "TMAX":
+                        if dt == "TMAX":
                             merged[key]["tmax"] = val
                         elif dt == "TMIN":
                             merged[key]["tmin"] = val
                         elif dt == "PRCP":
                             merged[key]["precip"] = val
-                    log_api_call(f"NOAA/{state['name']}", resp.status_code, len(data))
+                    log_api_call(f"NOAA/{st['name']}", resp.status_code, len(data))
                 else:
-                    log_api_call(f"NOAA/{state['name']}", resp.status_code, 0, resp.text[:200])
+                    log_api_call(f"NOAA/{st['name']}", resp.status_code, 0, resp.text[:200])
             except Exception as e:
-                log_api_call(f"NOAA/{state['name']}", 0, 0, str(e)[:200])
+                log_api_call(f"NOAA/{st['name']}", 0, 0, str(e)[:200])
 
-    # Build final records — compute temp_avg from TMAX/TMIN if TAVG missing
+    # Build final records — compute temp_avg from (TMAX + TMIN) / 2
     records = []
     for key in sorted(merged.keys()):
         m = merged[key]
-        temp_avg = m["tavg"]
-        if temp_avg is None and m["tmax"] is not None and m["tmin"] is not None:
+        temp_avg = None
+        if m["tmax"] is not None and m["tmin"] is not None:
             temp_avg = round((m["tmax"] + m["tmin"]) / 2, 1)
         records.append({
             "state": m["state"],
