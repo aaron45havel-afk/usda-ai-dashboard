@@ -27,21 +27,34 @@ from config import PORT, HOST
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize database and seed data on startup."""
-    print("Initializing database...")
-    init_db()
-    print("Fetching initial data from all tiers...")
+    print("Initializing database...", flush=True)
     try:
-        await asyncio.gather(
-            fetch_nass_crop_data(),
-            fetch_ams_market_prices(),
-            fetch_snap_data(),
-            fetch_weather_data(),
-        )
-        print("Running anomaly detection...")
-        run_anomaly_detection()
-        print("Startup complete — all data loaded.")
+        init_db()
+        print("Database initialized.", flush=True)
     except Exception as e:
-        print(f"Warning: Some data fetches failed during startup: {e}")
+        print(f"Database init error: {e}", flush=True)
+
+    # Load data in background so healthcheck can respond immediately
+    async def load_data():
+        try:
+            print("Fetching initial data from all tiers...", flush=True)
+            results = await asyncio.gather(
+                fetch_nass_crop_data(),
+                fetch_ams_market_prices(),
+                fetch_snap_data(),
+                fetch_weather_data(),
+                return_exceptions=True,
+            )
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    print(f"  Tier fetch {i} failed: {r}", flush=True)
+            print("Running anomaly detection...", flush=True)
+            run_anomaly_detection()
+            print("Startup complete — all data loaded.", flush=True)
+        except Exception as e:
+            print(f"Warning: Data loading failed: {e}", flush=True)
+
+    asyncio.create_task(load_data())
     yield
 
 
