@@ -149,7 +149,7 @@
 <div class="header">
   <div>
     <h1>USDA Agricultural AI Dashboard</h1>
-    <div class="subtitle">Fraud Detection &amp; Loan Modernization Proof of Concept &mdash; Aligned with USDA AI Strategy FY26&ndash;27</div>
+    <div class="subtitle">SNAP &amp; Commodity Anomaly Detection &mdash; Proof of Concept</div>
   </div>
   <div class="header-right">
     <span class="status-dot" id="statusDot"></span>
@@ -163,11 +163,11 @@
   <div style="max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center;">
     <div>
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;opacity:0.7;margin-bottom:8px;">Proof of Concept</div>
-      <h2 style="font-size:26px;font-weight:700;margin-bottom:12px;line-height:1.3;">Helping USDA Protect Billions in Taxpayer Dollars with AI</h2>
+      <h2 style="font-size:26px;font-weight:700;margin-bottom:12px;line-height:1.3;">AI-Powered Anomaly Detection for USDA Programs</h2>
       <p style="font-size:14px;opacity:0.85;line-height:1.6;margin-bottom:16px;">
-        This dashboard demonstrates how AI can detect improper payments across FSA, FNS, and SNAP programs
-        while supporting loan modernization for Rural Development. Built to align with the
-        <strong>USDA AI Strategy (Sept 2025)</strong> and <strong>OMB M-25-21</strong> requirements.
+        This dashboard uses multi-signal analysis to flag unusual patterns in FNS/SNAP benefit data
+        and USDA commodity markets. It cross-references participation, benefits, inflation, QC error rates,
+        and geographic trends to surface months and states worth investigating.
       </p>
       <p style="font-size:13px;opacity:0.7;">All flagged anomalies require human review &mdash; AI spots patterns, humans decide action.</p>
     </div>
@@ -302,7 +302,7 @@
 <div id="page-anomalies" class="page">
   <div class="section-header">
     <h2>AI Anomaly Detection</h2>
-    <div class="tier-info"><span class="tag tag-danger">Fraud & Improper Payment Analysis</span></div>
+    <div class="tier-info"><span class="tag tag-danger">Multi-Signal Statistical Analysis</span></div>
   </div>
   <div class="metrics-row" id="anomalyMetrics"></div>
   <div class="grid-2">
