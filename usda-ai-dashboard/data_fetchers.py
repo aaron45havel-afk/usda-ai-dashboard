@@ -323,7 +323,7 @@ async def fetch_weather_data():
 
 # ---------------------------------------------------------------------------
 # MULTI-SIGNAL ANOMALY DETECTION ENGINE
-# 5 signals cross-referenced for fraud/improper payment analysis
+# 5 signals cross-referenced for anomaly detection
 # ---------------------------------------------------------------------------
 def run_anomaly_detection():
     """Run multi-signal anomaly detection across all datasets.
