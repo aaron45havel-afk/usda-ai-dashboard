@@ -108,12 +108,46 @@
 <div class="header">
   <div>
     <h1>USDA Agricultural AI Dashboard</h1>
-    <div class="subtitle">Real-time market data, SNAP analytics & anomaly detection</div>
+    <div class="subtitle">Fraud Detection &amp; Loan Modernization Proof of Concept &mdash; Aligned with USDA AI Strategy FY26&ndash;27</div>
   </div>
   <div class="header-right">
     <span class="status-dot" id="statusDot"></span>
     <span class="status-text" id="statusText">Connecting...</span>
     <button class="refresh-btn" onclick="refreshAllData()" id="refreshBtn">Refresh Data</button>
+  </div>
+</div>
+
+<!-- MISSION HERO BANNER -->
+<div style="background:linear-gradient(135deg,#0B2F1F 0%,#1B4F72 100%);color:white;padding:32px 40px;">
+  <div style="max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center;">
+    <div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;opacity:0.7;margin-bottom:8px;">Proof of Concept</div>
+      <h2 style="font-size:26px;font-weight:700;margin-bottom:12px;line-height:1.3;">Helping USDA Protect Billions in Taxpayer Dollars with AI</h2>
+      <p style="font-size:14px;opacity:0.85;line-height:1.6;margin-bottom:16px;">
+        This dashboard demonstrates how AI can detect improper payments across FSA, FNS, and SNAP programs
+        while supporting loan modernization for Rural Development. Built to align with the
+        <strong>USDA AI Strategy (Sept 2025)</strong> and <strong>OMB M-25-21</strong> requirements.
+      </p>
+      <p style="font-size:13px;opacity:0.7;">All flagged anomalies require human review &mdash; AI spots patterns, humans decide action.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div style="background:rgba(255,255,255,0.1);border-radius:8px;padding:16px;text-align:center;">
+        <div style="font-size:28px;font-weight:700;" id="heroSnap">--</div>
+        <div style="font-size:11px;opacity:0.7;margin-top:4px;">SNAP Participants Tracked</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);border-radius:8px;padding:16px;text-align:center;">
+        <div style="font-size:28px;font-weight:700;color:#E74C3C;" id="heroAnomalies">--</div>
+        <div style="font-size:11px;opacity:0.7;margin-top:4px;">Anomalies Flagged for Review</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);border-radius:8px;padding:16px;text-align:center;">
+        <div style="font-size:28px;font-weight:700;color:#27AE60;" id="heroCommodities">--</div>
+        <div style="font-size:11px;opacity:0.7;margin-top:4px;">Live Commodity Feeds</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);border-radius:8px;padding:16px;text-align:center;">
+        <div style="font-size:28px;font-weight:700;color:#F39C12;" id="heroStates">--</div>
+        <div style="font-size:11px;opacity:0.7;margin-top:4px;">Agricultural States Monitored</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -327,6 +361,14 @@ async function loadAllData() {
 
     document.getElementById('statusDot').style.background = '#27AE60';
     document.getElementById('statusText').textContent = 'Live — ' + new Date().toLocaleTimeString();
+
+    // Populate hero banner
+    const snapSum = snap.national_trend || [];
+    const latestSnap = snapSum[snapSum.length - 1] || {};
+    document.getElementById('heroSnap').textContent = latestSnap.total_participants ? (latestSnap.total_participants/1e6).toFixed(1)+'M' : '--';
+    document.getElementById('heroAnomalies').textContent = anomalies.total || 0;
+    document.getElementById('heroCommodities').textContent = overview.commodities_tracked || 0;
+    document.getElementById('heroStates').textContent = [...new Set((snap.by_state||[]).map(r=>r.state))].length || 0;
 
     renderOverview(overview, anomalies);
     renderMarkets(commodities);
