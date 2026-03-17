@@ -575,6 +575,10 @@ function renderSnap(data) {
       <div class="metric-label">States Tracked</div>
       <div class="metric-value">${[...new Set((data.by_state||[]).map(r=>r.state))].length}</div>
     </div>
+    <div class="metric-card accent">
+      <div class="metric-label">Counties Tracked</div>
+      <div class="metric-value">${data.county_count || 0}</div>
+    </div>
   `;
 
   destroyChart('snapTrendChart');
@@ -625,60 +629,60 @@ function renderSnap(data) {
 // RENDER: Weather
 // ---------------------------------------------------------------------------
 function renderWeather(data) {
-  // Aggregate by state+date (average across stations if multiple)
-  const agg = {};
+  // Group by county (or state if no county)
+  const byLocation = {};
   (data.data || []).forEach(r => {
-    const key = r.state + '|' + r.date;
-    if (!agg[key]) agg[key] = { state: r.state, date: r.date, temps: [], precips: [] };
-    if (r.temp_avg != null) agg[key].temps.push(r.temp_avg);
-    if (r.precip != null) agg[key].precips.push(r.precip);
+    const loc = r.county ? `${r.county}, ${r.state}` : r.state;
+    if (!byLocation[loc]) byLocation[loc] = [];
+    byLocation[loc].push(r);
   });
-  const byState = {};
-  Object.values(agg).forEach(a => {
-    if (!byState[a.state]) byState[a.state] = [];
-    byState[a.state].push({
-      state: a.state, date: a.date,
-      temp_avg: a.temps.length ? +(a.temps.reduce((s,v)=>s+v,0)/a.temps.length).toFixed(1) : null,
-      precip: a.precips.length ? +(a.precips.reduce((s,v)=>s+v,0)/a.precips.length).toFixed(2) : null,
-    });
-  });
-  // Sort each state's data by date
-  Object.values(byState).forEach(rows => rows.sort((a,b) => a.date.localeCompare(b.date)));
+  // Sort each location's data by date
+  Object.values(byLocation).forEach(rows => rows.sort((a,b) => a.date.localeCompare(b.date)));
+
+  // For temperature chart, show one line per county (limit to 10 for readability)
+  const locations = Object.keys(byLocation).slice(0, 10);
 
   destroyChart('tempChart');
   charts.tempChart = new Chart(document.getElementById('tempChart'), {
     type: 'line',
     data: {
-      datasets: Object.entries(byState).map(([state, rows], i) => ({
-        label: state,
-        data: rows.filter(r=>r.temp_avg != null).map(r => ({ x: r.date, y: r.temp_avg })),
-        borderColor: COLORS[i % COLORS.length], backgroundColor: 'transparent', tension: 0.3, pointRadius: 2,
+      datasets: locations.map((loc, i) => ({
+        label: loc.length > 20 ? loc.split(',')[0] : loc,
+        data: byLocation[loc].filter(r=>r.temp_avg != null).map(r => ({ x: r.date, y: r.temp_avg })),
+        borderColor: COLORS[i % COLORS.length], backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, borderWidth: 1.5,
       }))
     },
-    options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'category' }, y: { title: { display: true, text: 'Temp (F)' } } } }
+    options: { responsive: true, maintainAspectRatio: false,
+      scales: { x: { type: 'category' }, y: { title: { display: true, text: 'Temp (F)' } } },
+      plugins: { legend: { labels: { font: { size: 10 } } } }
+    }
   });
 
+  // Precipitation: bar chart by county
   destroyChart('precipChart');
   charts.precipChart = new Chart(document.getElementById('precipChart'), {
     type: 'bar',
     data: {
-      labels: Object.keys(byState),
+      labels: locations.map(l => l.length > 15 ? l.split(',')[0] : l),
       datasets: [{
         label: 'Avg Precip (in)',
-        data: Object.values(byState).map(rows => {
-          const vals = rows.filter(r=>r.precip).map(r=>r.precip);
+        data: locations.map(loc => {
+          const vals = byLocation[loc].filter(r=>r.precip).map(r=>r.precip);
           return vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2) : 0;
         }),
-        backgroundColor: COLORS.slice(0, Object.keys(byState).length), borderRadius: 6,
+        backgroundColor: COLORS.slice(0, locations.length), borderRadius: 6,
       }]
     },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: { x: { ticks: { font: { size: 10 } } } }
+    }
   });
 
-  const latest = (data.data || []).slice(0, 30);
+  // Table: show county-level detail
+  const latest = (data.data || []).slice(0, 40);
   document.getElementById('weatherTable').innerHTML = renderTable(
-    ['State', 'Date', 'Avg Temp (F)', 'Precip (in)', 'Drought Index'],
-    latest.map(r => [r.state, r.date, r.temp_avg || '—', r.precip || '—', r.drought_index || '—'])
+    ['County', 'State', 'Date', 'Avg Temp (F)', 'Precip (in)'],
+    latest.map(r => [r.county || '—', r.state, r.date, r.temp_avg != null ? r.temp_avg : '—', r.precip != null ? r.precip : '—'])
   );
 }
 
